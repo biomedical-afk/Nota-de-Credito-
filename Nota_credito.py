@@ -1,6 +1,6 @@
 import streamlit as st
 import requests
-from datetime import date
+from datetime import date, datetime
 from typing import List, Dict, Any
 
 # ==========================
@@ -46,7 +46,6 @@ HEADERS  = {"Authorization": f"Bearer {API_TOKEN}", "Content-Type": "application
 # UTILIDADES NINOX
 # ==========================
 def _ninox_get(path: str, params: Dict[str, Any] | None = None, page_size: int = 200) -> List[Dict[str, Any]]:
-    """Descarga todos los registros con paginación."""
     out: List[Dict[str, Any]] = []
     offset = 0
     while True:
@@ -73,8 +72,8 @@ def obtener_productos() -> List[Dict[str, Any]]:
 def obtener_facturas() -> List[Dict[str, Any]]:
     return _ninox_get("/tables/Facturas/records")
 
-# Tabla con espacio -> usar URL-encoding
 def obtener_notas_credito() -> List[Dict[str, Any]]:
+    # Tabla con espacio -> URL-encoding
     return _ninox_get("/tables/Nota%20de%20Credito/records")
 
 def calcular_siguiente_factura_no(facturas: List[Dict[str, Any]]) -> str:
@@ -100,7 +99,7 @@ def calcular_siguiente_nc_no(notas: List[Dict[str, Any]]) -> str:
     return f"{max_nc + 1:08d}"
 
 # ==========================
-# CARGA / REFRESCO DE DATOS
+# CARGA / REFRESCO
 # ==========================
 if st.button("Actualizar datos de Ninox"):
     for k in ("clientes", "productos", "facturas", "notas_credito"):
@@ -121,14 +120,12 @@ facturas      = st.session_state["facturas"]
 notas_credito = st.session_state["notas_credito"]
 
 if not clientes:
-    st.warning("No hay clientes en Ninox")
-    st.stop()
+    st.warning("No hay clientes en Ninox"); st.stop()
 if not productos:
-    st.warning("No hay productos en Ninox")
-    st.stop()
+    st.warning("No hay productos en Ninox"); st.stop()
 
 # ==========================
-# MIGRACIÓN/INICIALIZACIÓN DE ÍTEMS
+# ÍTEMS (state)
 # ==========================
 if "line_items" not in st.session_state:
     prev = st.session_state.get("items", [])
@@ -136,7 +133,7 @@ if "line_items" not in st.session_state:
     st.session_state.pop("items", None)
 
 # ==========================
-# TIPO DE DOCUMENTO
+# TIPO DOC
 # ==========================
 st.sidebar.markdown("## Tipo de documento")
 doc_humano = st.sidebar.selectbox("Seleccione", ["Factura", "Nota de Crédito"])
@@ -144,10 +141,9 @@ DOC_MAP = {"Factura": "01", "Nota de Crédito": "06"}
 doc_type = DOC_MAP[doc_humano]
 
 # ==========================
-# SELECCIÓN DE CLIENTE
+# CLIENTE
 # ==========================
 st.header("Datos del Cliente")
-
 nombres_clientes = [c.get("fields", {}).get("Nombre", f"Cliente {i}") for i, c in enumerate(clientes, start=1)]
 cliente_idx = st.selectbox("Seleccione Cliente", range(len(nombres_clientes)), format_func=lambda x: nombres_clientes[x])
 cliente_fields: Dict[str, Any] = clientes[cliente_idx].get("fields", {}) or {}
@@ -162,29 +158,27 @@ with col2:
     st.text_input("Correo",    value=cliente_fields.get("Correo", ""),     disabled=True)
 
 # ==========================
-# NÚMERO DE DOCUMENTO
+# NÚMERO DOC
 # ==========================
 facturas_pendientes = [f for f in facturas if (f.get("fields", {}) or {}).get("Estado", "").strip().lower() == "pendiente"]
 
 if doc_type == "01":
     if facturas_pendientes:
         opciones_facturas = [(f.get("fields", {}) or {}).get("Factura No.", "") for f in facturas_pendientes]
-        idx_factura = st.selectbox(
-            "Seleccione Factura Pendiente",
-            range(len(opciones_facturas)),
-            format_func=lambda x: str(opciones_facturas[x])
-        )
+        idx_factura = st.selectbox("Seleccione Factura Pendiente",
+                                   range(len(opciones_facturas)),
+                                   format_func=lambda x: str(opciones_facturas[x]))
         numero_preview = str(opciones_facturas[idx_factura])
     else:
         numero_preview = calcular_siguiente_factura_no(facturas)
-else:  # "06" Nota de Crédito
+else:
     numero_preview = calcular_siguiente_nc_no(notas_credito)
 
 st.text_input("Número de Documento Fiscal", value=numero_preview, disabled=True)
 fecha_emision = st.date_input("Fecha Emisión", value=date.today())
 
 # ==========================
-# CAMPOS ESPECÍFICOS PARA NOTA DE CRÉDITO
+# CAMPOS NC
 # ==========================
 motivo_nc = ""
 factura_afectada = ""
@@ -198,10 +192,9 @@ if doc_type == "06":
     st.session_state["motivo_nc"] = motivo_nc
 
 # ==========================
-# ÍTEMS
+# ÍTEMS UI
 # ==========================
 st.header("Agregar Productos / Conceptos")
-
 nombres_productos = [
     f"{(p.get('fields', {}) or {}).get('Código','')} | {(p.get('fields', {}) or {}).get('Descripción','')}"
     for p in productos
@@ -211,7 +204,7 @@ prod_fields = productos[prod_idx].get("fields", {}) or {}
 
 cantidad    = st.number_input("Cantidad", min_value=1.0, value=1.0, step=1.0)
 precio_unit = float(prod_fields.get("Precio Unitario", 0) or 0)
-itbms_rate  = float(prod_fields.get("ITBMS", 0) or 0)   # ej. 0.07
+itbms_rate  = float(prod_fields.get("ITBMS", 0) or 0)
 
 if st.button("Agregar ítem"):
     valor_itbms = round(itbms_rate * cantidad * precio_unit, 2)
@@ -253,7 +246,7 @@ if emisor:
     st.session_state["emisor"] = emisor
 
 # ==========================
-# BACKEND DGI
+# BACKEND
 # ==========================
 BACKEND_URL = "https://ninox-factory-server.onrender.com"
 
@@ -266,7 +259,7 @@ def _ninox_refrescar_tablas():
     st.session_state["notas_credito"] = obtener_notas_credito()
 
 # ==========================
-# BUILDER DE PAYLOAD
+# PAYLOAD
 # ==========================
 def armar_payload_documento(
     *,
@@ -284,16 +277,18 @@ def armar_payload_documento(
 ) -> Dict[str, Any]:
 
     forma_pago_codigo = {"Efectivo": "01", "Débito": "02", "Crédito": "03"}[medio_pago]
-    # Para NC: formatoCAFE=3, entregaCAFE=3, tipoVenta=""
     formato_cafe  = 3 if doc_type == "06" else 1
     entrega_cafe  = 3 if doc_type == "06" else 1
     tipo_venta    = "" if doc_type == "06" else 1
 
-    # Motivo y referencia de la factura afectada (sin nodo documentoAfectado)
+    # Motivo y referencia en informacionInteres
     info_interes = ""
     if doc_type == "06":
-        ref = f" de la factura {factura_afectada.strip()}" if factura_afectada.strip() else ""
+        ref = f" (afecta a la factura {factura_afectada.strip()})" if factura_afectada.strip() else ""
         info_interes = (motivo_nc or "Nota de crédito") + ref
+
+    # Fecha/hora ISO para pagoPlazo (mismo día)
+    fecha_venc_iso = f"{fecha_emision.isoformat()}T23:59:59-05:00"
 
     lista_items = []
     for i in items:
@@ -322,7 +317,7 @@ def armar_payload_documento(
             "tipoSucursal": "1",
             "datosTransaccion": {
                 "tipoEmision": "01",
-                "tipoDocumento": doc_type,  # "01" Factura | "06" Nota de Crédito
+                "tipoDocumento": doc_type,
                 "numeroDocumentoFiscal": str(numero_documento),
                 "puntoFacturacionFiscal": "001",
                 "fechaEmision": f"{fecha_emision.isoformat()}T09:00:00-05:00",
@@ -367,6 +362,13 @@ def armar_payload_documento(
                         "valorCuotaPagada": f"{total:.2f}",
                     }]
                 },
+                # *** NUEVO: requerido por el WS ***
+                "listaPagoPlazo": {
+                    "pagoPlazo": [{
+                        "fechaVenceCuota": fecha_venc_iso,
+                        "valorCuota": f"{total:.2f}"
+                    }]
+                }
             },
         }
     }
@@ -374,22 +376,18 @@ def armar_payload_documento(
     return payload
 
 # ==========================
-# ENVIAR A DGI
+# ENVIAR
 # ==========================
 if st.button("Enviar Documento a DGI"):
     if not emisor.strip():
-        st.error("Debe ingresar el nombre de quien emite el documento.")
-        st.stop()
+        st.error("Debe ingresar el nombre de quien emite el documento."); st.stop()
     if not st.session_state["line_items"]:
-        st.error("Debe agregar al menos un ítem.")
-        st.stop()
+        st.error("Debe agregar al menos un ítem."); st.stop()
     if doc_type == "06":
         if not factura_afectada.strip():
-            st.error("Para la Nota de Crédito debe indicar la Factura a afectar.")
-            st.stop()
+            st.error("Para la Nota de Crédito debe indicar la Factura a afectar."); st.stop()
         if not motivo_nc.strip():
-            st.error("Para la Nota de Crédito debe ingresar el motivo / información de interés.")
-            st.stop()
+            st.error("Para la Nota de Crédito debe ingresar el motivo."); st.stop()
 
     numero_documento = numero_preview
 
@@ -408,7 +406,7 @@ if st.button("Enviar Documento a DGI"):
             factura_afectada=factura_afectada,
         )
 
-        url_envio = f"{BACKEND_URL}/enviar-factura"  # el backend decide según tipoDocumento
+        url_envio = f"{BACKEND_URL}/enviar-factura"
         r = requests.post(url_envio, json=payload, timeout=60)
         if r.ok:
             st.success(f"{doc_humano} enviada correctamente. Generando PDF…")
@@ -416,7 +414,7 @@ if st.button("Enviar Documento a DGI"):
             _ninox_refrescar_tablas()
             st.session_state["ultima_factura_no"] = str(numero_documento)
 
-            # Intento de descarga PDF inmediata
+            # misma ruta para ambos tipos
             url_pdf = f"{BACKEND_URL}/descargar-pdf"
             pdf_payload = {
                 "codigoSucursalEmisor":  "0000",
@@ -435,7 +433,7 @@ if st.button("Enviar Documento a DGI"):
             else:
                 st.session_state["pdf_bytes"] = None
                 st.session_state["pdf_name"]  = None
-                st.error("Documento enviado, pero no se pudo generar el PDF automáticamente.")
+                st.error("Documento enviado, pero no se pudo generar el PDF automáticamente (404 en backend).")
                 try:
                     st.write(rpdf.json())
                 except Exception:
@@ -463,7 +461,7 @@ if st.session_state.get("pdf_bytes") and st.session_state.get("pdf_name"):
     )
 
 # ==========================
-# INFO / AYUDA
+# AYUDA
 # ==========================
 with st.expander("Ayuda / Referencias"):
     st.markdown(
@@ -472,13 +470,13 @@ with st.expander("Ayuda / Referencias"):
         - Campos esperados:
           - **Clientes**: Nombre, RUC, DV, Dirección, Teléfono, Correo
           - **Productos**: Código, Descripción, Precio Unitario, ITBMS (decimal; ej. 0.07)
-          - **Facturas**: Estado (use "Pendiente" para listar), "Factura No." (consecutivo)
+          - **Facturas**: Estado (use "Pendiente"), "Factura No." (consecutivo)
           - **Nota de Credito**: **"Credit No."** (consecutivo NC)
         - **Tipo de documento**:
           - **Factura (01)**: formatoCAFE=1, entregaCAFE=1, tipoVenta=1.
-          - **Nota de Crédito (06)**: formatoCAFE=3, entregaCAFE=3, tipoVenta="", se registra referencia y motivo en `informacionInteres`.
-        - Envío a DGI vía backend: `/enviar-factura` y descarga `/descargar-pdf` pasando `tipoDocumento`.
-        - Zona horaria/CAFE: fija 09:00 -05:00.
+          - **Nota de Crédito (06)**: formatoCAFE=3, entregaCAFE=3, tipoVenta="", motivo y referencia en `informacionInteres`.
+        - **Requerido por WS**: `listaPagoPlazo.pagoPlazo[0]` con `fechaVenceCuota` y `valorCuota`.
+        - Descarga PDF: misma ruta `/descargar-pdf` para ambos tipos (si tu backend la expone).
         """
     )
 
