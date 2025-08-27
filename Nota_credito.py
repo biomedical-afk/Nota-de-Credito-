@@ -73,7 +73,7 @@ def obtener_productos() -> List[Dict[str, Any]]:
 def obtener_facturas() -> List[Dict[str, Any]]:
     return _ninox_get("/tables/Facturas/records")
 
-# --- NUEVO: Tabla "Nota de Credito" (con espacio; ruta URL-codificada) ---
+# Tabla con espacio -> usar URL-encoding
 def obtener_notas_credito() -> List[Dict[str, Any]]:
     return _ninox_get("/tables/Nota%20de%20Credito/records")
 
@@ -88,7 +88,6 @@ def calcular_siguiente_factura_no(facturas: List[Dict[str, Any]]) -> str:
             continue
     return f"{max_factura + 1:08d}"
 
-# --- NUEVO: consecutivo propio para NC tomando "Credit No." de tu tabla ---
 def calcular_siguiente_nc_no(notas: List[Dict[str, Any]]) -> str:
     max_nc = 0
     for n in notas:
@@ -131,7 +130,6 @@ if not productos:
 # ==========================
 # MIGRACIÓN/INICIALIZACIÓN DE ÍTEMS
 # ==========================
-# Evita colisión con dict.items()
 if "line_items" not in st.session_state:
     prev = st.session_state.get("items", [])
     st.session_state["line_items"] = prev if isinstance(prev, list) else []
@@ -243,9 +241,9 @@ if st.session_state["line_items"]:
 # ==========================
 # TOTALES
 # ==========================
-total_neto    = sum(i["cantidad"] * i["precioUnitario"] for i in st.session_state["line_items"])
-total_itbms   = sum(i["valorITBMS"] for i in st.session_state["line_items"])
-total_total   = total_neto + total_itbms
+total_neto  = sum(i["cantidad"] * i["precioUnitario"] for i in st.session_state["line_items"])
+total_itbms = sum(i["valorITBMS"] for i in st.session_state["line_items"])
+total_total = total_neto + total_itbms
 
 st.write(f"**Total Neto:** {total_neto:.2f}   **ITBMS:** {total_itbms:.2f}   **Total:** {total_total:.2f}")
 
@@ -286,11 +284,16 @@ def armar_payload_documento(
 ) -> Dict[str, Any]:
 
     forma_pago_codigo = {"Efectivo": "01", "Débito": "02", "Crédito": "03"}[medio_pago]
-    # NC según tu XML: formatoCAFE=3, entregaCAFE=3, tipoVenta=""
+    # Para NC: formatoCAFE=3, entregaCAFE=3, tipoVenta=""
     formato_cafe  = 3 if doc_type == "06" else 1
     entrega_cafe  = 3 if doc_type == "06" else 1
     tipo_venta    = "" if doc_type == "06" else 1
-    info_interes  = (motivo_nc or "").strip() if doc_type == "06" else ""
+
+    # Motivo y referencia de la factura afectada (sin nodo documentoAfectado)
+    info_interes = ""
+    if doc_type == "06":
+        ref = f" de la factura {factura_afectada.strip()}" if factura_afectada.strip() else ""
+        info_interes = (motivo_nc or "Nota de crédito") + ref
 
     lista_items = []
     for i in items:
@@ -368,12 +371,6 @@ def armar_payload_documento(
         }
     }
 
-    # Referencia a la factura afectada (ajusta el nombre si tu backend espera otro nodo)
-    if doc_type == "06" and factura_afectada.strip():
-        payload["documento"]["datosTransaccion"]["documentoAfectado"] = {
-            "numeroDocumentoFiscal": factura_afectada.strip()
-        }
-
     return payload
 
 # ==========================
@@ -431,7 +428,7 @@ if st.button("Enviar Documento a DGI"):
             }
             rpdf = requests.post(url_pdf, json=pdf_payload, stream=True, timeout=60)
             ct = rpdf.headers.get("content-type", "")
-            if rpdf.ok and ct.startswith("application/pdf"):
+            if rpdf.ok and ct and ct.startswith("application/pdf"):
                 st.session_state["pdf_bytes"] = rpdf.content
                 st.session_state["pdf_name"]  = f"{'NC' if doc_type=='06' else 'Factura'}_{numero_documento}.pdf"
                 st.success("¡PDF generado y listo para descargar abajo!")
@@ -479,8 +476,10 @@ with st.expander("Ayuda / Referencias"):
           - **Nota de Credito**: **"Credit No."** (consecutivo NC)
         - **Tipo de documento**:
           - **Factura (01)**: formatoCAFE=1, entregaCAFE=1, tipoVenta=1.
-          - **Nota de Crédito (06)**: formatoCAFE=3, entregaCAFE=3, tipoVenta="", requiere “Factura a afectar” + “Motivo”.
+          - **Nota de Crédito (06)**: formatoCAFE=3, entregaCAFE=3, tipoVenta="", se registra referencia y motivo en `informacionInteres`.
         - Envío a DGI vía backend: `/enviar-factura` y descarga `/descargar-pdf` pasando `tipoDocumento`.
         - Zona horaria/CAFE: fija 09:00 -05:00.
         """
     )
+
+
