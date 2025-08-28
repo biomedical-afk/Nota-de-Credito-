@@ -1,6 +1,6 @@
 import streamlit as st
 import requests
-from datetime import date, datetime
+from datetime import date
 from typing import List, Dict, Any
 
 # ==========================
@@ -8,10 +8,7 @@ from typing import List, Dict, Any
 # ==========================
 st.set_page_config(page_title="Facturación Electrónica — IOM Panamá", layout="centered")
 
-USUARIOS = {
-    "Mispanama": "Maxilo2000",
-    "usuario1": "password123",
-}
+USUARIOS = {"Mispanama": "Maxilo2000", "usuario1": "password123"}
 
 if "autenticado" not in st.session_state:
     st.session_state["autenticado"] = False
@@ -72,8 +69,8 @@ def obtener_productos() -> List[Dict[str, Any]]:
 def obtener_facturas() -> List[Dict[str, Any]]:
     return _ninox_get("/tables/Facturas/records")
 
+# Tabla con espacio -> URL-encoding
 def obtener_notas_credito() -> List[Dict[str, Any]]:
-    # Tabla con espacio -> URL-encoding
     return _ninox_get("/tables/Nota%20de%20Credito/records")
 
 def calcular_siguiente_factura_no(facturas: List[Dict[str, Any]]) -> str:
@@ -99,7 +96,7 @@ def calcular_siguiente_nc_no(notas: List[Dict[str, Any]]) -> str:
     return f"{max_nc + 1:08d}"
 
 # ==========================
-# CARGA / REFRESCO
+# CARGA / REFRESCO DE DATOS
 # ==========================
 if st.button("Actualizar datos de Ninox"):
     for k in ("clientes", "productos", "facturas", "notas_credito"):
@@ -246,20 +243,21 @@ if emisor:
     st.session_state["emisor"] = emisor
 
 # ==========================
-# BACKEND
+# BACKEND + EMAIL UI
 # ==========================
 BACKEND_URL = "https://ninox-factory-server.onrender.com"
 
-if "pdf_bytes" not in st.session_state:
-    st.session_state["pdf_bytes"] = None
-    st.session_state["pdf_name"]  = None
+enviar_email = st.checkbox("Enviar CAFE por correo al cliente", value=True)
+email_destino_default = (cliente_fields.get("Correo") or "").strip()
+email_to = st.text_input("Email destino", value=email_destino_default if enviar_email else "", disabled=not enviar_email)
+email_cc = st.text_input("CC (opcional, separa por comas)", value="", disabled=not enviar_email)
 
 def _ninox_refrescar_tablas():
     st.session_state["facturas"]      = obtener_facturas()
     st.session_state["notas_credito"] = obtener_notas_credito()
 
 # ==========================
-# PAYLOAD
+# PAYLOAD A DGI
 # ==========================
 def armar_payload_documento(
     *,
@@ -281,14 +279,11 @@ def armar_payload_documento(
     entrega_cafe  = 3 if doc_type == "06" else 1
     tipo_venta    = "" if doc_type == "06" else 1
 
-    # Motivo y referencia en informacionInteres
+    # Motivo + referencia de la factura afectada en 'informacionInteres'
     info_interes = ""
     if doc_type == "06":
         ref = f" (afecta a la factura {factura_afectada.strip()})" if factura_afectada.strip() else ""
         info_interes = (motivo_nc or "Nota de crédito") + ref
-
-    # Fecha/hora ISO para pagoPlazo (mismo día)
-    fecha_venc_iso = f"{fecha_emision.isoformat()}T23:59:59-05:00"
 
     lista_items = []
     for i in items:
@@ -317,7 +312,7 @@ def armar_payload_documento(
             "tipoSucursal": "1",
             "datosTransaccion": {
                 "tipoEmision": "01",
-                "tipoDocumento": doc_type,
+                "tipoDocumento": doc_type,                # 01=Factura, 06=Nota de Crédito
                 "numeroDocumentoFiscal": str(numero_documento),
                 "puntoFacturacionFiscal": "001",
                 "fechaEmision": f"{fecha_emision.isoformat()}T09:00:00-05:00",
@@ -362,21 +357,20 @@ def armar_payload_documento(
                         "valorCuotaPagada": f"{total:.2f}",
                     }]
                 },
-                # *** NUEVO: requerido por el WS ***
+                # Requisito del WS
                 "listaPagoPlazo": {
                     "pagoPlazo": [{
-                        "fechaVenceCuota": fecha_venc_iso,
+                        "fechaVenceCuota": f"{fecha_emision.isoformat()}T23:59:59-05:00",
                         "valorCuota": f"{total:.2f}"
                     }]
                 }
             },
         }
     }
-
     return payload
 
 # ==========================
-# ENVIAR
+# ENVIAR SIN GENERAR PDF LOCAL
 # ==========================
 if st.button("Enviar Documento a DGI"):
     if not emisor.strip():
@@ -406,38 +400,38 @@ if st.button("Enviar Documento a DGI"):
             factura_afectada=factura_afectada,
         )
 
-        url_envio = f"{BACKEND_URL}/enviar-factura"
-        r = requests.post(url_envio, json=payload, timeout=60)
+        r = requests.post(f"{BACKEND_URL}/enviar-factura", json=payload, timeout=60)
         if r.ok:
-            st.success(f"{doc_humano} enviada correctamente. Generando PDF…")
+            st.success(f"{doc_humano} enviada correctamente ✅")
             st.session_state["line_items"] = []
             _ninox_refrescar_tablas()
-            st.session_state["ultima_factura_no"] = str(numero_documento)
 
-            # misma ruta para ambos tipos
-            url_pdf = f"{BACKEND_URL}/descargar-pdf"
-            pdf_payload = {
-                "codigoSucursalEmisor":  "0000",
-                "numeroDocumentoFiscal": str(numero_documento),
-                "puntoFacturacionFiscal":"001",
-                "tipoDocumento":         doc_type,
-                "tipoEmision":           "01",
-                "serialDispositivo":     "",
-            }
-            rpdf = requests.post(url_pdf, json=pdf_payload, stream=True, timeout=60)
-            ct = rpdf.headers.get("content-type", "")
-            if rpdf.ok and ct and ct.startswith("application/pdf"):
-                st.session_state["pdf_bytes"] = rpdf.content
-                st.session_state["pdf_name"]  = f"{'NC' if doc_type=='06' else 'Factura'}_{numero_documento}.pdf"
-                st.success("¡PDF generado y listo para descargar abajo!")
-            else:
-                st.session_state["pdf_bytes"] = None
-                st.session_state["pdf_name"]  = None
-                st.error("Documento enviado, pero no se pudo generar el PDF automáticamente (404 en backend).")
-                try:
-                    st.write(rpdf.json())
-                except Exception:
-                    st.write(rpdf.text)
+            # ===== Envío por email (opcional) =====
+            if enviar_email and (email_to or "").strip():
+                email_json = {
+                    "to": [e.strip() for e in (email_to or "").split(",") if e.strip()],
+                    "cc": [e.strip() for e in (email_cc or "").split(",") if e.strip()],
+                    "subject": f"{'Nota de Crédito' if doc_type=='06' else 'Factura'} electrónica #{numero_documento}",
+                    "body_html": f"""
+                    <p>Estimado(a),</p>
+                    <p>Se ha generado su {'Nota de Crédito' if doc_type=='06' else 'Factura'} <b>#{numero_documento}</b>.</p>
+                    <p>Adjuntamos el CAFE oficial desde nuestro sistema.</p>
+                    <p>Saludos,<br>IOM Panamá</p>
+                    """,
+                    # Tu backend debe generar/recuperar y adjuntar el CAFE
+                    "meta": {
+                        "codigoSucursalEmisor":  "0000",
+                        "numeroDocumentoFiscal": str(numero_documento),
+                        "puntoFacturacionFiscal":"001",
+                        "tipoDocumento":         doc_type,
+                        "tipoEmision":           "01",
+                    }
+                }
+                rem = requests.post(f"{BACKEND_URL}/enviar-cafe-email", json=email_json, timeout=60)
+                if rem.ok:
+                    st.success("CAFE enviado por correo 📧")
+                else:
+                    st.warning("Documento creado; no se pudo enviar el email (revisa backend / logs).")
         else:
             st.error("Error al enviar el documento.")
             try:
@@ -448,36 +442,14 @@ if st.button("Enviar Documento a DGI"):
         st.error(f"Error de conexión con el backend: {e}")
 
 # ==========================
-# DESCARGA PDF
-# ==========================
-if st.session_state.get("pdf_bytes") and st.session_state.get("pdf_name"):
-    st.markdown("---")
-    st.header("Descargar PDF")
-    st.download_button(
-        label="Descargar PDF",
-        data=st.session_state["pdf_bytes"],
-        file_name=st.session_state["pdf_name"],
-        mime="application/pdf",
-    )
-
-# ==========================
 # AYUDA
 # ==========================
 with st.expander("Ayuda / Referencias"):
     st.markdown(
         """
         - Tablas Ninox: `Clientes`, `Productos`, `Facturas`, **`Nota de Credito`**.
-        - Campos esperados:
-          - **Clientes**: Nombre, RUC, DV, Dirección, Teléfono, Correo
-          - **Productos**: Código, Descripción, Precio Unitario, ITBMS (decimal; ej. 0.07)
-          - **Facturas**: Estado (use "Pendiente"), "Factura No." (consecutivo)
-          - **Nota de Credito**: **"Credit No."** (consecutivo NC)
-        - **Tipo de documento**:
-          - **Factura (01)**: formatoCAFE=1, entregaCAFE=1, tipoVenta=1.
-          - **Nota de Crédito (06)**: formatoCAFE=3, entregaCAFE=3, tipoVenta="", motivo y referencia en `informacionInteres`.
-        - **Requerido por WS**: `listaPagoPlazo.pagoPlazo[0]` con `fechaVenceCuota` y `valorCuota`.
-        - Descarga PDF: misma ruta `/descargar-pdf` para ambos tipos (si tu backend la expone).
+        - No se genera PDF en la app; el correo se envía llamando a **/enviar-cafe-email** en tu backend.
+        - Requisitos WS: `listaPagoPlazo.pagoPlazo[0]` con `fechaVenceCuota` y `valorCuota`.
         """
     )
-
 
