@@ -141,7 +141,7 @@ doc_type = DOC_MAP[doc_humano]
 # CLIENTE
 # ==========================
 st.header("Datos del Cliente")
-nombres_clientes = [c.get("fields", {}).get("Nombre", f"Cliente {i}") for i, c in enumerate(clientes, start=1)]
+nombres_clientes = [c.get("fields", {}).get("cliente", f"Cliente {i}") for i, c in enumerate(clientes, start=1)]
 cliente_idx = st.selectbox("Seleccione Cliente", range(len(nombres_clientes)), format_func=lambda x: nombres_clientes[x])
 cliente_fields: Dict[str, Any] = clientes[cliente_idx].get("fields", {}) or {}
 
@@ -330,7 +330,7 @@ def armar_payload_documento(
                     "tipoContribuyente": 1,
                     "numeroRUC": (cliente_fields.get("RUC", "") or "").replace("-", ""),
                     "digitoVerificadorRUC": cliente_fields.get("DV", ""),
-                    "razonSocial": cliente_fields.get("Nombre", ""),
+                    "razonSocial": cliente_fields.get("cliente", ""),
                     "direccion": cliente_fields.get("Dirección", ""),
                     "telefono1": cliente_fields.get("Teléfono", ""),
                     "correoElectronico1": cliente_fields.get("Correo", ""),
@@ -418,7 +418,6 @@ if st.button("Enviar Documento a DGI"):
                     <p>Adjuntamos el CAFE oficial desde nuestro sistema.</p>
                     <p>Saludos,<br>IOM Panamá</p>
                     """,
-                    # Tu backend debe generar/recuperar y adjuntar el CAFE
                     "meta": {
                         "codigoSucursalEmisor":  "0000",
                         "numeroDocumentoFiscal": str(numero_documento),
@@ -450,6 +449,6 @@ with st.expander("Ayuda / Referencias"):
         - Tablas Ninox: `Clientes`, `Productos`, `Facturas`, **`Nota de Credito`**.
         - No se genera PDF en la app; el correo se envía llamando a **/enviar-cafe-email** en tu backend.
         - Requisitos WS: `listaPagoPlazo.pagoPlazo[0]` con `fechaVenceCuota` y `valorCuota`.
+        - El campo de nombre del cliente se espera como **`cliente`** en la tabla `Clientes`.
         """
     )
-
